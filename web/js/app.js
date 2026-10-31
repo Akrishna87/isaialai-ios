@@ -4,7 +4,7 @@ import * as L from './library.js';
 import { Player } from './player.js';
 import * as Q from './queue.js';
 
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 const $ = (id) => document.getElementById(id);
 
 // ---------- State ----------

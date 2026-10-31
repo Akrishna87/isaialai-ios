@@ -1,6 +1,6 @@
 // Offline app shell. Songs are never cached here: they live in the app's own
 // storage (OPFS / IndexedDB) and play from blob: URLs the service worker never sees.
-const VERSION = 'isaialai-v1.0.1';
+const VERSION = 'isaialai-v1.0.2';
 const SHELL = [
   './',
   'index.html',
@@ -72,7 +72,9 @@ self.addEventListener('fetch', (e) => {
     const cache = await caches.open(VERSION);
     try {
       const res = await Promise.race([
-        fetch(req),
+        // no-cache: always ask GitHub Pages if there's a newer file (it otherwise
+        // lets the phone reuse old copies for 10 minutes after an update).
+        fetch(req, { cache: 'no-cache' }),
         new Promise((_, rej) => setTimeout(() => rej(new Error('slow')), 4000)),
       ]);
       if (res && res.ok && res.type === 'basic') cache.put(req, res.clone());
