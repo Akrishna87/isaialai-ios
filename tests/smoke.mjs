@@ -107,6 +107,8 @@ try {
   await shot('5-upnext');
   await page.click('.sheet-scrim');
   await page.waitForSelector('#sheet', { state: 'hidden' });
+  // Test songs are 1 s long: pause first so one can't end (and move on by itself) before the tap.
+  await page.evaluate(() => window.isaialai.player.pause());
   const idx = await page.evaluate(() => window.isaialai.player.q.index);
   await page.click('#pNext');
   await page.waitForFunction((i) => window.isaialai.player.q.index === i + 1 && !document.getElementById('audio').paused, idx);
