@@ -3,8 +3,9 @@ import { readTags, blobReader, songInfo } from './tags.js';
 import * as L from './library.js';
 import { Player } from './player.js';
 import * as Q from './queue.js';
+import * as B from './backup.js';
 
-const VERSION = '1.0.2';
+const VERSION = '1.1.0';
 const $ = (id) => document.getElementById(id);
 
 // ---------- State ----------
@@ -21,6 +22,8 @@ const S = {
   stack: [], // views pushed on top of the current tab
   query: '',
   importing: false,
+  pending: null, // songs from a restored backup that aren't on this iPhone yet
+  lastBackup: 0,
 };
 
 const artUrls = new Map(); // art key -> object URL
@@ -129,6 +132,8 @@ async function loadAll() {
   S.liked = ((await db.kv.get('liked', [])) || []).filter((id) => S.songs.has(id));
   S.likedSet = new Set(S.liked);
   S.settings = { ...S.settings, ...((await db.kv.get('settings', {})) || {}) };
+  S.pending = await db.kv.get('pending', null);
+  S.lastBackup = (await db.kv.get('lastBackup', 0)) || 0;
   reindex();
 }
 
@@ -139,6 +144,7 @@ function reindex() {
 const savePlaylists = () => db.kv.set('playlists', S.playlists);
 const saveLiked = () => db.kv.set('liked', S.liked);
 const saveSettings = () => db.kv.set('settings', S.settings);
+const savePending = () => db.kv.set('pending', S.pending);
 
 // ---------- Player ----------
 
@@ -463,6 +469,21 @@ const VIEWS = {
       el('button', { class: 'btn primary', onclick: pickFiles }, el('span', { html: ICON.plus }), 'Add songs'),
       S.songs.size ? el('button', { class: 'btn danger', onclick: deleteAllSongs }, 'Delete all songs') : null));
 
+    const waiting = B.pendingCount(S.pending);
+    const days = S.lastBackup ? Math.floor((Date.now() - S.lastBackup) / 86400000) : -1;
+    box.append(el('div', { class: 'card' },
+      el('h3', null, 'Backup & restore'),
+      el('p', { class: 't2' }, 'Saves your playlists and Liked songs to a file (not the songs themselves). If you delete the app, restore it from this file. Works with backups from Isaialai on Android too.'),
+      el('p', { class: 't2' }, days < 0 ? 'No backup yet.' : `Last backup: ${days === 0 ? 'today' : days === 1 ? 'yesterday' : days + ' days ago'}.`),
+      waiting ? el('p', { class: 't2' }, `${count(waiting, 'song')} from a backup will go back into your playlists and likes when you add them.`) : null,
+      el('div', { class: 'card-actions' },
+        el('button', { class: 'btn primary', onclick: backUp }, 'Back up now'),
+        el('button', { class: 'btn', onclick: pickBackup }, 'Restore'),
+        waiting ? el('button', { class: 'btn ghost', onclick: async () => {
+          if (!confirm('Forget the songs a backup is still waiting for?')) return;
+          S.pending = null; await savePending(); render();
+        } }, 'Forget waiting songs') : null)));
+
     const choice = (val, label, desc) => el('label', { class: 'radio' },
       el('input', { type: 'radio', name: 'lock', value: val, checked: S.settings.lockButtons === val ? true : null,
         onchange: () => { S.settings.lockButtons = val; saveSettings(); player.setActions(); toast('Lock screen buttons changed'); } }),
@@ -754,6 +775,7 @@ async function importFiles(files) {
   let added = 0;
   let skipped = 0;
   let failed = 0;
+  const newSongs = [];
   try {
     for (let n = 0; n < files.length; n++) {
       const f = files[n];
@@ -781,6 +803,7 @@ async function importFiles(files) {
         };
         await db.putSong(song);
         S.songs.set(id, song);
+        newSongs.push(song);
         existing.add(f.name + '|' + f.size);
         added++;
         if (added % 25 === 0) { reindex(); render(); }
@@ -801,7 +824,99 @@ async function importFiles(files) {
   const parts = added || !skipped ? [`Added ${count(added, 'song')}`] : ['Already in your library'];
   if (skipped && added) parts.push(`${skipped} already here`);
   if (failed) parts.push(`${failed} couldn’t be read`);
-  toast(parts.join(' · '), 4000);
+  const back = B.resolvePending(S.pending, newSongs, { playlists: S.playlists, liked: S.liked });
+  if (back) {
+    S.playlists = back.playlists;
+    S.liked = back.liked;
+    S.likedSet = new Set(S.liked);
+    S.pending = B.pendingCount(back.pending) ? back.pending : null;
+    await Promise.all([savePlaylists(), saveLiked(), savePending()]);
+    if (back.added) parts.push(`${count(back.added, 'song')} put back in your playlists`);
+    render();
+  }
+  toast(parts.join(' · '), 5000);
+}
+
+// ---------- Backup and restore ----------
+
+function backupText() {
+  return B.makeBackup({
+    songs: S.songs, playlists: S.playlists, liked: S.liked, pending: S.pending,
+    settings: { lockButtons: S.settings.lockButtons },
+  });
+}
+
+// Saves the backup with the Share sheet (→ Save to Files), or as a download.
+async function backUp() {
+  const text = backupText();
+  const file = new File([text], B.BACKUP_NAME, { type: 'application/json' });
+  let saved = false;
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file] });
+      saved = true;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // closed the Share sheet
+    }
+  }
+  if (!saved) {
+    const url = URL.createObjectURL(file);
+    const a = el('a', { href: url, download: B.BACKUP_NAME });
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    saved = true;
+  }
+  S.lastBackup = Date.now();
+  await db.kv.set('lastBackup', S.lastBackup);
+  if (currentView().type === 'settings') render();
+  toast('Backup made. Keep it somewhere safe, like iCloud Drive.', 4000);
+}
+
+function pickBackup() {
+  const input = $('backupInput');
+  input.value = '';
+  input.click();
+}
+
+async function restoreFrom(file) {
+  let text;
+  try {
+    text = await file.text();
+  } catch (e) {
+    return toast('Couldn’t read that file.');
+  }
+  const contents = B.parseBackup(text);
+  if (!contents) return toast('That isn’t an Isaialai backup. Pick the file called “Isaialai backup.json”.', 5000);
+  const plan = B.planRestore(contents, [...S.songs.values()]);
+  const when = contents.createdMs ? new Date(contents.createdMs).toLocaleString() : 'unknown date';
+  const total = plan.found + plan.missing;
+  const lines = [
+    `Backup from ${contents.from === 'iPhone' ? 'an iPhone' : 'the Android app'}, made ${when}.`,
+    '',
+    `${count(plan.playlists.length, 'playlist')} and ${count(contents.liked.length, 'liked song')}.`,
+    total ? `${plan.found} of ${count(total, 'song')} are already in Isaialai on this iPhone.` : '',
+    plan.missing ? `The other ${plan.missing} will be put back automatically when you add those songs.` : '',
+    '',
+    'Your current playlists and likes are kept; playlists with the same name get the songs added.',
+    '',
+    'Restore now?',
+  ].filter((x, i, a) => x !== '' || (a[i - 1] !== '' && i > 0));
+  if (!confirm(lines.join('\n'))) return;
+  const r = B.applyRestore(plan, { playlists: S.playlists, liked: S.liked, pending: S.pending }, uid);
+  S.playlists = r.playlists;
+  S.liked = r.liked;
+  S.likedSet = new Set(S.liked);
+  S.pending = B.pendingCount(r.pending) ? r.pending : null;
+  if (plan.settings && ['tracks', 'seek'].includes(plan.settings.lockButtons)) {
+    S.settings.lockButtons = plan.settings.lockButtons;
+    await saveSettings();
+    player.setActions();
+  }
+  await Promise.all([savePlaylists(), saveLiked(), savePending()]);
+  render();
+  toast(plan.missing ? `Restored. Add the missing songs and they’ll go back in place.` : 'Restored!', 5000);
 }
 
 // ---------- Now playing UI ----------
@@ -962,6 +1077,10 @@ function wire() {
     if (files.length) importFiles(files);
   });
   $('importBtn').addEventListener('click', pickFiles);
+  $('backupInput').addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (f) restoreFrom(f);
+  });
   $('backBtn').addEventListener('click', back);
   for (const b of document.querySelectorAll('#tabs button')) b.addEventListener('click', () => setTab(b.dataset.tab));
 

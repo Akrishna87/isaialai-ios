@@ -196,6 +196,36 @@ try {
   assert.equal(await page.locator('.row.song').count(), 3);
   assert.equal(await page.evaluate(() => window.isaialai.player.q.items.length), 3);
 
+  step('back up, lose a playlist, restore it');
+  await page.click('#tabs [data-tab=settings]');
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Back up now' }).click()]);
+  assert.equal(download.suggestedFilename(), 'Isaialai backup.json');
+  const backupPath = await download.path();
+  const saved = JSON.parse(await readFile(backupPath, 'utf8'));
+  assert.equal(saved.app, 'Isaialai');
+  assert.equal(saved.playlists[0].name, 'Road trip');
+  await page.getByText('Last backup: today').waitFor();
+  await page.evaluate(async () => {
+    const S = window.isaialai.S;
+    S.playlists.length = 0; // as if the app was deleted and reinstalled
+  });
+  await page.setInputFiles('#backupInput', backupPath);
+  await page.getByText('Restored!').waitFor();
+  assert.deepEqual(await page.evaluate(() => window.isaialai.S.playlists.map((p) => p.name)), ['Road trip']);
+
+  step('restore an Android backup before adding its song, then add the song');
+  await page.setInputFiles('#backupInput', join(fixtures, 'android-backup.json'));
+  await page.getByText('Add the missing songs', { exact: false }).waitFor();
+  await page.getByText('1 song from a backup will go back', { exact: false }).waitFor();
+  await page.setInputFiles('#fileInput', join(fixtures, 'Ilaiyaraaja - Ilaya Nila.mp3'));
+  await page.getByText('1 song put back in your playlists', { exact: false }).waitFor({ timeout: 15000 });
+  const raja = await page.evaluate(() => {
+    const S = window.isaialai.S;
+    const p = S.playlists.find((x) => x.name === 'Raja');
+    return { songs: p.songs.map((id) => S.songs.get(id).title), liked: S.liked.map((id) => S.songs.get(id).title).includes('Ilaya Nila'), pending: S.pending };
+  });
+  assert.deepEqual(raja, { songs: ['Ilaya Nila'], liked: true, pending: null });
+
   step('service worker and offline reload');
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.reload();
@@ -203,7 +233,7 @@ try {
   await ctx.setOffline(true);
   await page.reload();
   await page.locator('.row.song').first().waitFor();
-  assert.equal(await page.locator('.row.song').count(), 3);
+  assert.equal(await page.locator('.row.song').count(), 4);
   await ctx.setOffline(false);
 
   const real = errors.filter((e) => !/favicon|Failed to load resource.*(net::ERR_INTERNET_DISCONNECTED)/.test(e));

@@ -1,11 +1,12 @@
 // Offline app shell. Songs are never cached here: they live in the app's own
 // storage (OPFS / IndexedDB) and play from blob: URLs the service worker never sees.
-const VERSION = 'isaialai-v1.0.2';
+const VERSION = 'isaialai-v1.1.0';
 const SHELL = [
   './',
   'index.html',
   'css/app.css',
   'js/app.js',
+  'js/backup.js',
   'js/db.js',
   'js/library.js',
   'js/player.js',

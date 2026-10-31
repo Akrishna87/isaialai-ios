@@ -275,6 +275,7 @@ body.player-open .toast { bottom: auto; top: calc(var(--top) + 56px); }
 .card p { margin: 4px 0; }
 .card .t2 { white-space: normal; }
 .card .btn { margin-top: 10px; }
+.card .btn:not(.primary):not(.ghost) { background: rgba(255, 255, 255, .09); }
 .card-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .radio { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; cursor: pointer; }
 .radio input { accent-color: var(--coral); width: 20px; height: 20px; margin-top: 2px; flex: none; }
