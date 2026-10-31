@@ -4,7 +4,7 @@ import * as L from './library.js';
 import { Player } from './player.js';
 import * as Q from './queue.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const $ = (id) => document.getElementById(id);
 
 // ---------- State ----------
@@ -24,7 +24,6 @@ const S = {
 };
 
 const artUrls = new Map(); // art key -> object URL
-const artData = new Map(); // art key -> data URL for the lock screen
 
 // ---------- Small DOM helper ----------
 
@@ -150,25 +149,13 @@ const player = new Player($('audio'), {
     if (!blob) throw new Error('Song file missing');
     return URL.createObjectURL(blob);
   },
-  artDataUrl: async (song) => {
-    if (!song.art) return null;
-    if (artData.has(song.art)) return artData.get(song.art);
-    const blob = await db.getArt(song.art);
-    if (!blob) return null;
-    const src = await new Promise((res) => {
-      const r = new FileReader();
-      r.onload = () => res(r.result);
-      r.onerror = () => res(null);
-      r.readAsDataURL(blob);
-    });
-    if (!src) return null;
-    const out = { src, sizes: '512x512', type: blob.type || 'image/jpeg' };
-    artData.set(song.art, out);
-    return out;
+  artwork: (song) => {
+    const abs = (u) => new URL(u, location.href).href;
+    if (song.art && navigator.serviceWorker && navigator.serviceWorker.controller) {
+      return [{ src: abs('art/' + song.art), sizes: '512x512' }];
+    }
+    return [{ src: abs('icons/icon-512.png'), sizes: '512x512', type: 'image/png' }];
   },
-  defaultArtwork: () => [
-    { src: new URL('icons/icon-512.png', location.href).href, sizes: '512x512', type: 'image/png' },
-  ],
   load: () => db.kv.get('player', null),
   save: (v) => db.kv.set('player', v).catch(() => {}),
   setDuration: (song, ms) => {
@@ -179,6 +166,7 @@ const player = new Player($('audio'), {
 });
 
 player.addEventListener('message', (e) => toast(e.detail));
+player.addEventListener('remote', () => { if (currentView().type === 'settings') render(); });
 player.addEventListener('song', () => renderNowPlaying());
 player.addEventListener('state', () => renderPlayState());
 player.addEventListener('time', () => renderTime());
@@ -485,6 +473,19 @@ const VIEWS = {
       choice('tracks', '⏮ ⏭ Previous / next song', 'Best for most people.'),
       choice('seek', '⏪ ⏩ Back / forward 10 seconds', 'Handy for long songs and stories. Change songs in the app.')));
 
+    const r = player.lastRemote;
+    const names = { play: 'Play', pause: 'Pause', stop: 'Stop', previoustrack: 'Previous song', nexttrack: 'Next song',
+      seekto: 'Seek bar', seekbackward: 'Back 10 s', seekforward: 'Forward 10 s' };
+    box.append(el('div', { class: 'card' },
+      el('h3', null, 'Lock screen check'),
+      el('p', { class: 't2', id: 'remoteLine' }, !('mediaSession' in navigator)
+        ? 'This browser has no lock-screen controls for web apps.'
+        : r ? `Last button from the lock screen: ${names[r.action] || r.action}, at ${new Date(r.at).toLocaleTimeString()}.`
+          : 'No lock-screen button presses yet. Play a song, lock the phone, press a button, then come back here.'),
+      el('p', { class: 't2' }, navigator.serviceWorker && navigator.serviceWorker.controller
+        ? 'Cover art for the lock screen: ready.'
+        : 'Cover art for the lock screen: not ready yet. Close and reopen the app once.')));
+
     box.append(el('div', { class: 'card' },
       el('h3', null, 'Good to know'),
       el('ul', { class: 'notes' },
@@ -695,7 +696,6 @@ async function deleteSongs(songs) {
       await db.deleteArt(key).catch(() => {});
       const u = artUrls.get(key);
       artUrls.delete(key);
-      artData.delete(key);
       if (u) u.then((x) => x && URL.revokeObjectURL(x));
     }
   }

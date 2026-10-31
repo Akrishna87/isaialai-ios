@@ -9,7 +9,7 @@ const SAVE_EVERY_MS = 4000;
 export class Player extends EventTarget {
   /**
    * @param {HTMLAudioElement} audio
-   * @param {object} lib  { song(id), fileUrl(song) -> Promise<url>, artDataUrl(song) -> Promise<url|null>,
+   * @param {object} lib  { song(id), fileUrl(song) -> Promise<url>, artwork(song) -> [MediaImage],
    *                        load() -> Promise<saved>, save(saved), settings() }
    */
   constructor(audio, lib) {
@@ -23,6 +23,9 @@ export class Player extends EventTarget {
     this.lastSave = 0;
     this.pendingSeek = null;
     this.loadToken = 0;
+    this.urls = new Map(); // song id -> object URL, kept for the current, next and previous songs
+    this.lastRemote = null; // last lock-screen button press, shown in Settings
+    try { this.lastRemote = JSON.parse(localStorage.getItem('lastRemote')); } catch (e) {}
     this.bind();
   }
 
@@ -45,7 +48,13 @@ export class Player extends EventTarget {
     a.addEventListener('ended', () => this.onEnded());
     a.addEventListener('play', () => { this.emit('state'); this.updateSession(); });
     a.addEventListener('pause', () => { this.emit('state'); this.updateSession(); this.save(true); });
-    a.addEventListener('playing', () => { this.errors = 0; this.updatePosition(); });
+    a.addEventListener('playing', () => {
+      this.errors = 0;
+      // iPhone sometimes drops the Now Playing info when the song changes; set it again.
+      this.setActions();
+      this.updateMetadata(this.song);
+      this.updateSession();
+    });
     a.addEventListener('timeupdate', () => {
       this.emit('time');
       if (Date.now() - this.lastSave > SAVE_EVERY_MS) this.save();
@@ -93,41 +102,80 @@ export class Player extends EventTarget {
 
   // ---- Loading songs ----
 
-  async load({ autoplay = true, at = 0 } = {}) {
+  // Loads the current queue entry. When its file URL is already prepared this
+  // runs without waiting, which matters on iPhone: a lock-screen button press
+  // only counts as a tap if play() is called straight away.
+  load({ autoplay = true, at = 0 } = {}) {
     const token = ++this.loadToken;
     const entry = Q.currentEntry(this.q);
     this.emit('queue');
     this.emit('song');
     if (!entry) {
       this.stop();
-      return;
+      return Promise.resolve();
     }
     const song = this.lib.song(entry.id);
-    let url;
-    try {
-      url = await this.lib.fileUrl(song);
-    } catch (e) {
-      if (token === this.loadToken) this.onError(e);
-      return;
-    }
-    if (token !== this.loadToken) { URL.revokeObjectURL(url); return; }
-    const old = this.url;
+    const ready = this.urls.get(song.id);
+    if (ready) return this.start(entry, song, ready, autoplay, at);
+    return this.urlFor(song).then(
+      (url) => (token === this.loadToken ? this.start(entry, song, url, autoplay, at) : undefined),
+      (e) => { if (token === this.loadToken) this.onError(e); },
+    );
+  }
+
+  start(entry, song, url, autoplay, at) {
     this.url = url;
     this.loadedKey = entry.k;
     this.pendingSeek = at > 0 ? at : null;
     this.audio.src = url;
-    if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
+    const playing = autoplay ? this.play() : (this.audio.load(), Promise.resolve());
     this.updateMetadata(song);
     this.save(true);
-    if (autoplay) await this.play();
-    else this.audio.load();
+    this.prepareNeighbours();
+    return playing;
+  }
+
+  async urlFor(song) {
+    let url = this.urls.get(song.id);
+    if (!url) {
+      url = await this.lib.fileUrl(song);
+      const again = this.urls.get(song.id);
+      if (again) { URL.revokeObjectURL(url); return again; }
+      this.urls.set(song.id, url);
+    }
+    return url;
+  }
+
+  // Gets the previous and next songs' files ready, and frees the rest.
+  prepareNeighbours() {
+    const q = this.q;
+    const n = q.items.length;
+    const keep = new Set();
+    for (const d of [-1, 0, 1]) {
+      let i = q.index + d;
+      if (i < 0 || i >= n) {
+        if (q.repeat !== 'all' || !n) continue;
+        i = (i + n) % n;
+      }
+      keep.add(q.items[i].id);
+    }
+    for (const [id, url] of this.urls) {
+      if (!keep.has(id) && url !== this.url) {
+        this.urls.delete(id);
+        URL.revokeObjectURL(url);
+      }
+    }
+    for (const id of keep) {
+      const s = this.lib.song(id);
+      if (s) this.urlFor(s).catch(() => {});
+    }
   }
 
   async play() {
     if (!Q.current(this.q)) return;
     if (this.loadedKey !== Q.currentEntry(this.q).k) return this.load({ autoplay: true });
     try {
-      await this.audio.play();
+      await this.audio.play(); // called synchronously; only the result is awaited
     } catch (e) {
       // NotAllowedError: iOS wants a tap first. AbortError: a newer load replaced this one.
       this.emit('state');
@@ -142,7 +190,8 @@ export class Player extends EventTarget {
     this.audio.pause();
     this.audio.removeAttribute('src');
     this.audio.load();
-    if (this.url) URL.revokeObjectURL(this.url);
+    for (const url of this.urls.values()) URL.revokeObjectURL(url);
+    this.urls.clear();
     this.url = null;
     this.loadedKey = null;
     if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
@@ -221,12 +270,14 @@ export class Player extends EventTarget {
 
   toggleShuffle() {
     this.q = Q.toggleShuffle(this.q);
+    this.prepareNeighbours();
     this.emit('queue');
     this.save(true);
   }
 
   cycleRepeat() {
     this.q = Q.cycleRepeat(this.q);
+    this.prepareNeighbours();
     this.emit('queue');
     this.save(true);
   }
@@ -235,6 +286,7 @@ export class Player extends EventTarget {
     const wasEmpty = !this.q.items.length;
     this.q = Q.playNext(this.q, ids);
     if (wasEmpty) return this.load({ autoplay: true });
+    this.prepareNeighbours();
     this.emit('queue');
     this.save(true);
   }
@@ -243,6 +295,7 @@ export class Player extends EventTarget {
     const wasEmpty = !this.q.items.length;
     this.q = Q.addToQueue(this.q, ids);
     if (wasEmpty) return this.load({ autoplay: true });
+    this.prepareNeighbours();
     this.emit('queue');
     this.save(true);
   }
@@ -252,12 +305,14 @@ export class Player extends EventTarget {
     const wasPlaying = this.playing;
     this.q = Q.removeAt(this.q, i);
     if (wasCurrent) return this.load({ autoplay: wasPlaying });
+    this.prepareNeighbours();
     this.emit('queue');
     this.save(true);
   }
 
   move(from, to) {
     this.q = Q.move(this.q, from, to);
+    this.prepareNeighbours();
     this.emit('queue');
     this.save(true);
   }
@@ -298,7 +353,12 @@ export class Player extends EventTarget {
     if (!('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
     const seekButtons = this.lib.settings().lockButtons === 'seek';
-    const set = (name, fn) => { try { ms.setActionHandler(name, fn); } catch (e) {} };
+    const set = (name, fn) => {
+      const wrapped = fn && ((d) => { this.lastRemote = { action: name, at: Date.now() };
+        try { localStorage.setItem('lastRemote', JSON.stringify(this.lastRemote)); } catch (e) {}
+        this.emit('remote'); fn(d || {}); });
+      try { ms.setActionHandler(name, wrapped); } catch (e) {}
+    };
     set('play', () => this.play());
     set('pause', () => this.pause());
     set('stop', () => this.pause());
@@ -313,18 +373,17 @@ export class Player extends EventTarget {
     set('seekforward', seekButtons ? (d) => this.skip(d.seekOffset || 10) : null);
   }
 
-  async updateMetadata(song) {
+  // Artwork must be a normal web address: iPhone ignores data: and blob: pictures
+  // on the lock screen. The service worker serves art/<key> from the app's storage.
+  updateMetadata(song) {
     if (!('mediaSession' in navigator) || !song) return;
-    const base = { title: song.title, artist: song.artist, album: song.album };
+    const m = navigator.mediaSession.metadata;
+    const artwork = this.lib.artwork(song);
+    if (m && m.title === song.title && m.artist === song.artist && m.album === song.album &&
+        m.artwork && m.artwork[0] && m.artwork[0].src === artwork[0].src) return;
     try {
-      navigator.mediaSession.metadata = new MediaMetadata({ ...base, artwork: this.lib.defaultArtwork() });
-    } catch (e) { return; }
-    const art = await this.lib.artDataUrl(song);
-    if (art && this.song === song) {
-      try {
-        navigator.mediaSession.metadata = new MediaMetadata({ ...base, artwork: [{ src: art.src, sizes: art.sizes, type: art.type }] });
-      } catch (e) {}
-    }
+      navigator.mediaSession.metadata = new MediaMetadata({ title: song.title, artist: song.artist, album: song.album, artwork });
+    } catch (e) {}
   }
 
   updateSession() {

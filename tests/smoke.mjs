@@ -31,6 +31,12 @@ const base = `http://127.0.0.1:${server.address().port}/isaialai-ios/`;
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
+// Capture the lock-screen handlers so the test can press them like iPhone does.
+await ctx.addInitScript(() => {
+  window.__ms = {};
+  const orig = navigator.mediaSession.setActionHandler.bind(navigator.mediaSession);
+  navigator.mediaSession.setActionHandler = (name, fn) => { window.__ms[name] = fn; return orig(name, fn); };
+});
 const page = await ctx.newPage();
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));
@@ -111,6 +117,45 @@ try {
   await page.click('#pFwd10');
   await page.click('#playerClose');
   await page.waitForSelector('#player', { state: 'hidden' });
+
+  step('lock-screen Next switches the song straight away (no waiting)');
+  await page.evaluate(() => window.isaialai.player.play());
+  await page.waitForFunction(() => !document.getElementById('audio').paused);
+  await page.waitForFunction(() => window.isaialai.player.urls.size >= 2); // neighbours prepared
+  const sync = await page.evaluate(() => {
+    const p = window.isaialai.player;
+    const before = p.q.index;
+    const src = p.audio.src;
+    window.__ms.nexttrack({ action: 'nexttrack' });
+    return { moved: p.q.index !== before, srcChanged: p.audio.src !== src };
+  });
+  assert.deepEqual(sync, { moved: true, srcChanged: true });
+  await page.waitForFunction(() => !document.getElementById('audio').paused);
+  await page.evaluate(() => window.__ms.pause({ action: 'pause' }));
+  await page.waitForFunction(() => document.getElementById('audio').paused);
+  await page.evaluate(() => window.__ms.play({ action: 'play' }));
+  await page.waitForFunction(() => !document.getElementById('audio').paused);
+
+  step('lock-screen artwork is a real web address the service worker answers');
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.reload();
+  await page.waitForSelector('#mini:not([hidden])');
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+  const withArt = await page.evaluate(() => [...window.isaialai.S.songs.values()].find((s) => s.art).id);
+  const art = await page.evaluate(async (id) => {
+    const p = window.isaialai.player;
+    const ids = window.isaialai.S.index.songs.map((s) => s.id);
+    await p.playList(ids, ids.indexOf(id), { shuffle: false });
+    const src = navigator.mediaSession.metadata.artwork[0].src;
+    const res = await fetch(src);
+    return { src, type: res.headers.get('content-type'), size: (await res.blob()).size };
+  }, withArt);
+  assert.match(art.src, /\/art\/a/);
+  assert.equal(art.type, 'image/jpeg');
+  assert.ok(art.size > 100);
+  await page.click('#tabs [data-tab=settings]');
+  await page.getByText('Last button from the lock screen: Play', { exact: false }).waitFor();
+  await page.getByText('Cover art for the lock screen: ready.').waitFor();
 
   step('liked songs and playlists');
   await page.click('#tabs [data-tab=playlists]');

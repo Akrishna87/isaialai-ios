@@ -1,6 +1,6 @@
 // Offline app shell. Songs are never cached here: they live in the app's own
 // storage (OPFS / IndexedDB) and play from blob: URLs the service worker never sees.
-const VERSION = 'isaialai-v1.0.0';
+const VERSION = 'isaialai-v1.0.1';
 const SHELL = [
   './',
   'index.html',
@@ -31,12 +31,42 @@ self.addEventListener('activate', (e) => {
   );
 });
 
+// Cover art for the lock screen: iPhone only shows artwork from a normal web
+// address, so art/<key> is answered from the app's IndexedDB.
+function artFromDb(key) {
+  return new Promise((resolve) => {
+    const open = indexedDB.open('isaialai');
+    open.onerror = () => resolve(null);
+    open.onsuccess = () => {
+      const db = open.result;
+      try {
+        const r = db.transaction('art', 'readonly').objectStore('art').get(key);
+        r.onsuccess = () => { resolve(r.result || null); db.close(); };
+        r.onerror = () => { resolve(null); db.close(); };
+      } catch (err) {
+        db.close();
+        resolve(null);
+      }
+    };
+  });
+}
+
+const ART_PATH = new URL('art/', self.registration.scope).pathname;
+
 // Network first (so updates show up), falling back to the cache when offline or slow.
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith(ART_PATH)) {
+    e.respondWith((async () => {
+      const blob = await artFromDb(decodeURIComponent(url.pathname.slice(ART_PATH.length)));
+      if (!blob) return fetch(new URL('icons/icon-512.png', self.registration.scope));
+      return new Response(blob, { headers: { 'Content-Type': blob.type || 'image/jpeg', 'Cache-Control': 'max-age=31536000' } });
+    })());
+    return;
+  }
   if (req.headers.has('range')) return; // media requests: leave them alone
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);
