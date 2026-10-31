@@ -34,6 +34,11 @@ separately.
 - **Liked songs** and your own **playlists** (create, add, remove, rename, delete).
 - Reads title, artist, album, music director, year, track and cover art from
   the songs' tags, or uses the file name when there are none.
+- **Backup & restore** (Settings): saves your playlists and Liked songs to
+  `Isaialai backup.json` with the Share sheet (→ Save to Files), and restores
+  it. Uses the same format as the Android app, so backups move both ways.
+  Songs are matched by file name, length and title/artist. If you restore
+  before adding the songs, they go back into their playlists as you add them.
 - **Settings:** storage used, delete songs, and lock-screen buttons.
 - Works offline once installed.
 
@@ -50,7 +55,8 @@ separately.
 ## Coming later
 
 - Import the Android app's **Pack all songs into a zip** file (songs plus
-  `Isaialai backup.json`), and backup and restore that works with the Android app.
+  `Isaialai backup.json`) in one go.
+- Import .m3u playlists.
 - Instant mix and Your recap.
 - Lyrics.
 - Sleep timer and playback speed.
@@ -66,6 +72,7 @@ Plain HTML, CSS and JavaScript modules in [`web/`](web), with no build step.
 | `web/js/queue.js` | The play queue: shuffle, repeat, play next, up next (pure functions) |
 | `web/js/library.js` | Albums, artists, music directors and search (pure functions) |
 | `web/js/tags.js` | Reads ID3v2.2/2.3/2.4, ID3v1 and M4A tags and cover art |
+| `web/js/backup.js` | Backup file (same format as Android), matching songs, restoring (pure functions) |
 | `web/js/db.js` | Song files in OPFS (or IndexedDB on older iPhones), everything else in IndexedDB |
 | `web/sw.js` | Offline app shell. Songs are never put in the service worker cache |
 
