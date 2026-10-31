@@ -11,7 +11,8 @@ const FORMAT = 1;
 
 export function refOf(song) {
   return {
-    path: '/' + (song.fileName || song.title),
+    // Songs from an Android zip keep their folder ("Music/Hindi/x.mp3"), which the Android app matches exactly.
+    path: '/' + (song.path || song.fileName || song.title),
     title: song.title || '',
     artist: song.artist || '',
     album: song.album || '',
@@ -101,6 +102,17 @@ const normName = (s) => String(s || '').normalize('NFKC').toLowerCase().replace(
 const baseName = (p) => String(p || '').replace(/\\/g, '/').split('/').pop().toLowerCase();
 const gap = (s, ms) => (!ms || !s.durationMs ? 0 : Math.abs(s.durationMs - ms));
 const UNKNOWN = new Set(['', 'unknownartist', 'unknown']);
+// Path after the storage it's on: "music/hindi/x.mp3" from "/storage/emulated/0/Music/Hindi/x.mp3".
+const STORAGE = /^(\/storage\/emulated\/\d+\/|\/storage\/self\/primary\/|\/mnt\/sdcard\/|\/sdcard\/|\/storage\/[^/]+\/|[a-z]:\/)/;
+const relative = (p) => String(p || '').replace(/\\/g, '/').toLowerCase().replace(STORAGE, '').replace(/^\/+|\/+$/g, '');
+// How many path parts two paths share at the end ("hindi/x.mp3" = 2).
+function sameEnding(a, b) {
+  const x = a.split('/').reverse();
+  const y = b.split('/').reverse();
+  let n = 0;
+  while (n < x.length && n < y.length && x[n] === y[n]) n++;
+  return n;
+}
 
 export class SongMatcher {
   constructor(songs) {
@@ -120,8 +132,11 @@ export class SongMatcher {
     const file = baseName(ref.path);
     const sameFile = file && this.byFile.get(file);
     if (sameFile) {
-      const best = closest(sameFile);
-      if (!ms || gap(best, ms) <= 5000) return best;
+      // The copy whose folders match the most (several albums can have "01.mp3"), then the closest length.
+      const rel = relative(ref.path);
+      const score = (s) => (s.path ? sameEnding(relative(s.path), rel) : 1);
+      const best = sameFile.reduce((a, b) => (score(b) > score(a) || (score(b) === score(a) && gap(b, ms) < gap(a, ms)) ? b : a));
+      if (score(best) >= 2 || !ms || gap(best, ms) <= 5000) return best;
     }
     const title = normName(ref.title);
     if (!title) return null;

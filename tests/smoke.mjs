@@ -107,6 +107,8 @@ try {
   await shot('5-upnext');
   await page.click('.sheet-scrim');
   await page.waitForSelector('#sheet', { state: 'hidden' });
+  // Test songs are 1 s long: pause first so one can't end (and move on by itself) before the tap.
+  await page.evaluate(() => window.isaialai.player.pause());
   const idx = await page.evaluate(() => window.isaialai.player.q.index);
   await page.click('#pNext');
   await page.waitForFunction((i) => window.isaialai.player.q.index === i + 1 && !document.getElementById('audio').paused, idx);
@@ -226,6 +228,29 @@ try {
   });
   assert.deepEqual(raja, { songs: ['Ilaya Nila'], liked: true, pending: null });
 
+  step('import the Android app\'s zip: songs plus playlists from the backup inside');
+  await page.click('#tabs [data-tab=settings]');
+  await page.getByRole('button', { name: 'Delete all songs' }).click();
+  await page.getByText('Deleted 4 songs').waitFor();
+  await page.evaluate(() => { window.isaialai.S.playlists.length = 0; });
+  await page.setInputFiles('#fileInput', join(fixtures, 'android-songs.zip'));
+  await page.getByText('Restored!').waitFor({ timeout: 20000 });
+  const z = await page.evaluate(() => {
+    const S = window.isaialai.S;
+    const songs = [...S.songs.values()];
+    return {
+      paths: songs.map((s) => s.path).sort(),
+      raja: S.playlists.find((p) => p.name === 'Raja').songs.map((id) => S.songs.get(id).title),
+    };
+  });
+  assert.deepEqual(z.paths, ['Download/tagged.m4a', 'Music/Ilaiyaraaja/Ilaiyaraaja - Ilaya Nila.mp3', 'Music/Vaathi/tagged-v23.mp3']);
+  assert.deepEqual(z.raja, ['Ilaya Nila']);
+  await page.click('#tabs [data-tab=library]');
+  await page.getByRole('button', { name: 'Songs', exact: true }).click();
+  assert.equal(await page.locator('.row.song').count(), 3);
+  await page.locator('.row.song', { hasText: 'Vaa Vaathi' }).first().click();
+  await page.waitForFunction(() => { const a = document.getElementById('audio'); return !a.paused && a.currentTime > 0.1; }, null, { timeout: 10000 });
+
   step('service worker and offline reload');
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.reload();
@@ -233,7 +258,7 @@ try {
   await ctx.setOffline(true);
   await page.reload();
   await page.locator('.row.song').first().waitFor();
-  assert.equal(await page.locator('.row.song').count(), 4);
+  assert.equal(await page.locator('.row.song').count(), 3);
   await ctx.setOffline(false);
 
   const real = errors.filter((e) => !/favicon|Failed to load resource.*(net::ERR_INTERNET_DISCONNECTED)/.test(e));
