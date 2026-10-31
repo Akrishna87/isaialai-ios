@@ -4,8 +4,9 @@ import * as L from './library.js';
 import { Player } from './player.js';
 import * as Q from './queue.js';
 import * as B from './backup.js';
+import * as Z from './zip.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const $ = (id) => document.getElementById(id);
 
 // ---------- State ----------
@@ -319,7 +320,7 @@ const VIEWS = {
     main.append(el('div', { class: 'chips' },
       subs.map(([k, label]) => el('button', { class: 'chip' + (S.libSub === k ? ' on' : ''), onclick: () => { S.libSub = k; render(true); } }, label))));
     if (!S.songs.size) {
-      main.append(empty('No songs yet. Tap Add songs and pick mp3 or m4a files from the Files app (On My iPhone, iCloud Drive, or files you AirDropped).', true));
+      main.append(empty('No songs yet. Tap Add songs and pick mp3 or m4a files from the Files app (On My iPhone, iCloud Drive, or files you AirDropped), or the zip from Isaialai on Android.', true));
       return 'Library';
     }
     const ix = S.index;
@@ -474,6 +475,7 @@ const VIEWS = {
     box.append(el('div', { class: 'card' },
       el('h3', null, 'Backup & restore'),
       el('p', { class: 't2' }, 'Saves your playlists and Liked songs to a file (not the songs themselves). If you delete the app, restore it from this file. Works with backups from Isaialai on Android too.'),
+      el('p', { class: 't2' }, 'Moving from Android? There, use Pack all songs into a zip. Here, tap + and pick the zip: the songs and your playlists come across together.'),
       el('p', { class: 't2' }, days < 0 ? 'No backup yet.' : `Last backup: ${days === 0 ? 'today' : days === 1 ? 'yesterday' : days + ' days ago'}.`),
       waiting ? el('p', { class: 't2' }, `${count(waiting, 'song')} from a backup will go back into your playlists and likes when you add them.`) : null,
       el('div', { class: 'card-actions' },
@@ -766,11 +768,66 @@ function probeDuration(file) {
 
 const AUDIO_EXT = /\.(mp3|m4a|aac|mp4|m4b|wav|flac|ogg|opus)$/i;
 
+const isZip = (f) => /\.zip$/i.test(f.name) || /zip/.test(f.type || '');
+
+function mimeFor(name) {
+  return /\.(m4a|m4b|mp4|aac)$/i.test(name) ? 'audio/mp4' : /\.wav$/i.test(name) ? 'audio/wav' : 'audio/mpeg';
+}
+
+// Keeps the screen on while adding songs: iPhone pauses web apps when the screen locks.
+async function keepAwake() {
+  try {
+    if (navigator.wakeLock) return await navigator.wakeLock.request('screen');
+  } catch (e) {}
+  return null;
+}
+
+// Songs picked in Files, and zips (like the Android app's "Pack all songs into a zip").
 async function importFiles(files) {
-  files = [...files].filter((f) => AUDIO_EXT.test(f.name) || (f.type || '').startsWith('audio/'));
-  if (!files.length) return toast('Those weren’t songs. Pick mp3 or m4a files.');
+  if (S.importing) return toast('Still adding songs…');
+  const items = [];
+  const backups = [];
+  let unreadable = 0;
+  for (const f of files) {
+    if (isZip(f)) {
+      toast(`Opening ${f.name}…`, 0);
+      let entries;
+      try {
+        entries = await Z.listZip(f);
+      } catch (e) {
+        console.error(e);
+        unreadable++;
+        continue;
+      }
+      for (const e of entries) {
+        if (e.dir || e.encrypted || (e.method !== 0 && e.method !== 8)) continue;
+        const path = Z.cleanPath(e.name);
+        if (!path) continue;
+        if (Z.BACKUP_RE.test(path) && e.size < 20 * 1024 * 1024) {
+          backups.push(Z.entryBlob(f, e).then((b) => b.text()).catch(() => null));
+        } else if (Z.AUDIO_RE.test(path)) {
+          const name = path.split('/').pop();
+          items.push({ name, size: e.size, path, type: mimeFor(name), get: () => Z.entryBlob(f, e, mimeFor(name)) });
+        }
+      }
+    } else if (AUDIO_EXT.test(f.name) || (f.type || '').startsWith('audio/')) {
+      items.push({ name: f.name, size: f.size, path: '', type: f.type || mimeFor(f.name), get: async () => f });
+    }
+  }
+  const backupTexts = (await Promise.all(backups)).filter(Boolean);
+  if (!items.length && !backupTexts.length) {
+    return toast(unreadable ? 'Couldn’t open that zip.' : 'Those weren’t songs. Pick mp3 or m4a files, or a zip of songs.', 5000);
+  }
+  await importItems(items);
+  // The zip came with the Android app's backup: offer to bring back playlists and likes.
+  for (const text of backupTexts) await restoreText(text, 'zip');
+}
+
+async function importItems(files) {
+  if (!files.length) return;
   S.importing = true;
   db.askPersist();
+  const lock = await keepAwake();
   const existing = new Set([...S.songs.values()].map((s) => s.fileName + '|' + s.size));
   let added = 0;
   let skipped = 0;
@@ -779,10 +836,11 @@ async function importFiles(files) {
   try {
     for (let n = 0; n < files.length; n++) {
       const f = files[n];
-      toast(`Adding songs… ${n + 1} of ${files.length}`, 0);
+      toast(`Adding songs… ${n + 1} of ${files.length}${files.length > 20 ? '. Keep the app open.' : ''}`, 0);
       if (existing.has(f.name + '|' + f.size)) { skipped++; continue; }
       try {
-        const tags = await readTags(blobReader(f));
+        const blob = await f.get();
+        const tags = await readTags(blobReader(blob));
         const info = songInfo(tags, f.name);
         const id = uid();
         let art = null;
@@ -791,14 +849,14 @@ async function importFiles(files) {
           if (!(await db.getArt(art))) await db.putArt(art, new Blob([tags.picture.data], { type: tags.picture.mime }));
         }
         if (!info.durationMs) {
-          const d = await probeDuration(f);
+          const d = await probeDuration(blob);
           if (d < 0) { failed++; continue; } // the phone can't play it
           info.durationMs = d;
         }
-        const store = await db.saveFile(id, f);
+        const store = await db.saveFile(id, blob);
         const song = {
-          id, ...info, art, fileName: f.name, size: f.size,
-          type: f.type || (/\.m4a$/i.test(f.name) ? 'audio/mp4' : 'audio/mpeg'),
+          id, ...info, art, fileName: f.name, path: f.path || '', size: f.size,
+          type: f.type || mimeFor(f.name),
           store, addedAt: Date.now(),
         };
         await db.putSong(song);
@@ -807,7 +865,7 @@ async function importFiles(files) {
         existing.add(f.name + '|' + f.size);
         added++;
         if (added % 25 === 0) { reindex(); render(); }
-      } catch (e) {
+  } catch (e) {
         if (e && e.name === 'QuotaExceededError') {
           toast('Your iPhone is out of space for more songs.', 6000);
           break;
@@ -818,6 +876,7 @@ async function importFiles(files) {
     }
   } finally {
     S.importing = false;
+    if (lock) lock.release().catch(() => {});
     reindex();
     render();
   }
@@ -887,12 +946,20 @@ async function restoreFrom(file) {
   } catch (e) {
     return toast('Couldn’t read that file.');
   }
+  return restoreText(text, 'file');
+}
+
+async function restoreText(text, from) {
   const contents = B.parseBackup(text);
-  if (!contents) return toast('That isn’t an Isaialai backup. Pick the file called “Isaialai backup.json”.', 5000);
+  if (!contents) {
+    if (from === 'file') toast('That isn’t an Isaialai backup. Pick the file called “Isaialai backup.json”.', 5000);
+    return;
+  }
   const plan = B.planRestore(contents, [...S.songs.values()]);
   const when = contents.createdMs ? new Date(contents.createdMs).toLocaleString() : 'unknown date';
   const total = plan.found + plan.missing;
   const lines = [
+    from === 'zip' ? 'The zip also has your playlists and Liked songs.' : '',
     `Backup from ${contents.from === 'iPhone' ? 'an iPhone' : 'the Android app'}, made ${when}.`,
     '',
     `${count(plan.playlists.length, 'playlist')} and ${count(contents.liked.length, 'liked song')}.`,
@@ -902,7 +969,7 @@ async function restoreFrom(file) {
     'Your current playlists and likes are kept; playlists with the same name get the songs added.',
     '',
     'Restore now?',
-  ].filter((x, i, a) => x !== '' || (a[i - 1] !== '' && i > 0));
+  ].filter((x, i, a) => x !== '' || (i > 0 && a[i - 1] !== ''));
   if (!confirm(lines.join('\n'))) return;
   const r = B.applyRestore(plan, { playlists: S.playlists, liked: S.liked, pending: S.pending }, uid);
   S.playlists = r.playlists;

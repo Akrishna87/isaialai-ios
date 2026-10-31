@@ -16,6 +16,12 @@ Screen. No App Store, no account, no ads, and your songs never leave the phone.
 5. Tap **+** and pick songs from the Files app (On My iPhone, iCloud Drive, or
    files you AirDropped from a computer).
 
+**Moving from Isaialai on Android?** On Android, use **Pack all songs into a
+zip**, then get the zip onto the iPhone (AirDrop from a computer, iCloud Drive
+or Google Drive → Save to Files). In Isaialai on iPhone tap **+** and pick the
+zip. Your songs are added, then your playlists and Liked songs from the backup
+inside the zip.
+
 Add songs **in the Home Screen app**, not in a Safari tab: iPhone keeps the two
 separately.
 
@@ -34,6 +40,10 @@ separately.
 - **Liked songs** and your own **playlists** (create, add, remove, rename, delete).
 - Reads title, artist, album, music director, year, track and cover art from
   the songs' tags, or uses the file name when there are none.
+- **Android zip:** pick the Android app's **Pack all songs into a zip** file
+  with **+** to add all the songs and restore the playlists and likes inside it.
+  The zip is read straight from Files, one song at a time, so even a zip of
+  several GB works (as long as the iPhone has room).
 - **Backup & restore** (Settings): saves your playlists and Liked songs to
   `Isaialai backup.json` with the Share sheet (→ Save to Files), and restores
   it. Uses the same format as the Android app, so backups move both ways.
@@ -54,8 +64,6 @@ separately.
 
 ## Coming later
 
-- Import the Android app's **Pack all songs into a zip** file (songs plus
-  `Isaialai backup.json`) in one go.
 - Import .m3u playlists.
 - Instant mix and Your recap.
 - Lyrics.
@@ -73,6 +81,7 @@ Plain HTML, CSS and JavaScript modules in [`web/`](web), with no build step.
 | `web/js/library.js` | Albums, artists, music directors and search (pure functions) |
 | `web/js/tags.js` | Reads ID3v2.2/2.3/2.4, ID3v1 and M4A tags and cover art |
 | `web/js/backup.js` | Backup file (same format as Android), matching songs, restoring (pure functions) |
+| `web/js/zip.js` | Reads zips straight from the file (stored, deflate, ZIP64, Java's sizes-after-data) |
 | `web/js/db.js` | Song files in OPFS (or IndexedDB on older iPhones), everything else in IndexedDB |
 | `web/sw.js` | Offline app shell. Songs are never put in the service worker cache |
 

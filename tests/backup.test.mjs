@@ -92,3 +92,13 @@ test('an iPhone backup round-trips, including songs still waiting to be added', 
   assert.equal(plan.playlists[0].missing[0].title, 'X song');
   assert.deepEqual(plan.liked, ['u']);
 });
+
+test('songs with the same file name in different folders match by folder', async () => {
+  const { SongMatcher, refOf } = await import('../web/js/backup.js');
+  const a = { id: 'a', title: 'Track 1', artist: 'X', fileName: '01.mp3', path: 'Music/Bombay/01.mp3', durationMs: 200000 };
+  const b = { id: 'b', title: 'Track 1', artist: 'X', fileName: '01.mp3', path: 'Music/Roja/01.mp3', durationMs: 200000 };
+  const m = new SongMatcher([a, b]);
+  assert.equal(m.find({ path: '/storage/emulated/0/Music/Roja/01.mp3', title: 'Track 1', artist: 'X', durationMs: 200000 }).id, 'b');
+  assert.equal(m.find({ path: '/storage/emulated/0/Music/Bombay/01.mp3', title: 'Track 1', artist: 'X', durationMs: 0 }).id, 'a');
+  assert.equal(refOf(b).path, '/Music/Roja/01.mp3');
+});
