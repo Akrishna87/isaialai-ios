@@ -118,6 +118,10 @@
   <input type="file" id="fileInput" class="vh" multiple accept="audio/*,.mp3,.m4a" tabindex="-1" aria-hidden="true">
   <audio id="audio" playsinline preload="auto"></audio>
 
+  <script>
+    // Ask for the newest service worker on every launch.
+    if ('serviceWorker' in navigator) navigator.serviceWorker.getRegistration().then((r) => r && r.update()).catch(() => {});
+  </script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>
